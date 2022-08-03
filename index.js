@@ -31,6 +31,8 @@ function USB(vid, pid){
   EventEmitter.call(this);
   var self = this;
   this.device = null;
+  // usb.removeAllListeners('detach');
+  // usb.removeAllListeners('attach');
   if(vid && pid){
     this.device = usb.findByIds(vid, pid);
   }else if(vid){
@@ -46,14 +48,29 @@ function USB(vid, pid){
     if(devices && devices.length)
       this.device = devices[0];
   }
-  if (!this.device)
-    throw new Error('Can not find printer');
-
+  if (!this.device) {
+      //throw new Error('Can not find printer');
+  }
+    
   usb.on('detach', function(device){
     if(device == self.device) {
       self.emit('detach'    , device);
       self.emit('disconnect', device);
       self.device = null;
+    }
+  });
+
+  usb.on('attach', function(device){
+    if (!self.device) {
+      var devices = USB.findPrinter();
+      if(devices && devices.length) {
+        self.device = devices[0];
+      }
+    }
+    
+    if(device == self.device) {
+      self.emit('attach'    , device);
+      //self.device = null;
     }
   });
 
@@ -180,7 +197,8 @@ USB.prototype.close = function(callback){
     try {
 
       this.device.close();
-      usb.removeAllListeners('detach');
+      // usb.removeAllListeners('detach');
+      // usb.removeAllListeners('attach');
 
       callback && callback(null);
       this.emit('close', this.device);
