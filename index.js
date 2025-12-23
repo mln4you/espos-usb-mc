@@ -1,14 +1,9 @@
 'use strict';
-const os           = require('os');
+const os            = require('os');
 const util          = require('util');
 const EventEmitter  = require('events');
 let usb = null;
 
-/**
- * [USB Class Codes ]
- * @type {Object}
- * @docs http://www.usb.org/developers/defined_class
- */
 const IFACE_CLASS = {
   AUDIO  : 0x01,
   HID    : 0x03,
@@ -16,209 +11,204 @@ const IFACE_CLASS = {
   HUB    : 0x09
 };
 
-/**
- * [function USB]
- * @param  {[type]} vid [description]
- * @param  {[type]} pid [description]
- * @return {[type]}     [description]
- */
-function USB(vid, pid){
-
-  if (!usb) {
-    usb = require('usb');
-  }
+function USB(vid, pid) {
+  if (!usb) usb = require('usb');
 
   EventEmitter.call(this);
+
   var self = this;
   this.device = null;
-  // usb.removeAllListeners('detach');
-  // usb.removeAllListeners('attach');
-  if(vid && pid){
+  this.endpoint = null;
+  this.deviceToPcEndpoint = null;
+
+  this._isOpen = false;
+  this._isClosing = false;
+
+  if (vid && pid) {
     this.device = usb.findByIds(vid, pid);
-  }else if(vid){
-      // Set spesific USB device from devices array as coming from USB.findPrinter() function.
-      // for example
-      // let devices = escpos.USB.findPrinter();
-      // => devices [ Device1, Device2 ];
-      // And Then
-      // const device = new escpos.USB(Device1); OR device = new escpos.USB(Device2);
-      this.device = vid;
-  }else{
+  } else if (vid) {
+    this.device = vid;
+  } else {
     var devices = USB.findPrinter();
-    if(devices && devices.length)
-      this.device = devices[0];
+    if (devices && devices.length) this.device = devices[0];
   }
-  if (!this.device) {
-      //throw new Error('Can not find printer');
-  }
-    
-  usb.on('detach', function(device){
-    if(device == self.device) {
-      self.emit('detach'    , device);
+
+  usb.on('detach', function (device) {
+    if (device === self.device) {
+      self._isOpen = false;
+      self.endpoint = null;
+      self.deviceToPcEndpoint = null;
+
+      self.emit('detach', device);
       self.emit('disconnect', device);
+
       self.device = null;
     }
   });
 
-  usb.on('attach', function(device){
+  usb.on('attach', function (device) {
     if (!self.device) {
       var devices = USB.findPrinter();
-      if(devices && devices.length) {
-        self.device = devices[0];
-      }
+      if (devices && devices.length) self.device = devices[0];
     }
-    
-    if(device == self.device) {
-      self.emit('attach'    , device);
-      //self.device = null;
+
+    if (device === self.device) {
+      self.emit('attach', device);
     }
   });
 
   return this;
+}
 
-};
+USB.findPrinter = function () {
+  if (!usb) usb = require('usb');
 
-/**
- * [findPrinter description]
- * @return {[type]} [description]
- */
-USB.findPrinter = function(){
-  if (!usb) {
-    usb = require('usb');
-  }
-  return usb.getDeviceList().filter(function(device){
-    try{
-      return device.configDescriptor.interfaces.filter(function(iface){
-        return iface.filter(function(conf){
+  return usb.getDeviceList().filter(function (device) {
+    try {
+      return device.configDescriptor.interfaces.filter(function (iface) {
+        return iface.filter(function (conf) {
           return conf.bInterfaceClass === IFACE_CLASS.PRINTER;
         }).length;
       }).length;
-    }catch(e){
-      // console.warn(e)
+    } catch (e) {
       return false;
     }
   });
 };
-/**
- * getDevice
- */
-USB.getDevice = function(vid, pid){
-  return new Promise((resolve, reject) => {
+
+USB.getDevice = function (vid, pid) {
+  return new Promise(function (resolve, reject) {
     const device = new USB(vid, pid);
-    device.open(err => {
-      if(err) return reject(err);
+    device.open(function (err) {
+      if (err) return reject(err);
       resolve(device);
     });
   });
 };
 
-/**
- * make USB extends EventEmitter
- */
 util.inherits(USB, EventEmitter);
 
-/**
- * [open usb device]
- * @param  {Function} callback [description]
- * @return {[type]}            [description]
- */
-USB.prototype.open = function (callback){
-  let self = this, counter = 0, index = 0;
-  this.device.open();
-  this.device.interfaces.forEach(function(iface){
-    (function(iface){
-      iface.setAltSetting(iface.altSetting, function(){
-        try {
-          // http://libusb.sourceforge.net/api-1.0/group__dev.html#gab14d11ed6eac7519bb94795659d2c971
-          // libusb_kernel_driver_active / libusb_attach_kernel_driver / libusb_detach_kernel_driver : "This functionality is not available on Windows."
-          if ("win32" !== os.platform()) {
-            if(iface.isKernelDriverActive()) {
-              try {
-                iface.detachKernelDriver();
-              } catch(e) {
-                console.error("[ERROR] Could not detatch kernel driver: %s", e)
+USB.prototype.open = function (callback) {
+  var self = this;
+  var counter = 0;
+
+  // KLJUČNO: nema device-a → nema open()
+  if (!this.device) {
+    callback && callback(new Error('No USB printer device found'));
+    return this;
+  }
+
+  // već otvoren
+  if (this._isOpen) {
+    callback && callback(null, this);
+    return this;
+  }
+
+  try {
+    this.device.open();
+  } catch (e) {
+    callback && callback(e);
+    return this;
+  }
+
+  try {
+    this.device.interfaces.forEach(function (iface) {
+      (function (iface) {
+        iface.setAltSetting(iface.altSetting, function () {
+          try {
+            if ("win32" !== os.platform()) {
+              if (iface.isKernelDriverActive()) {
+                try { iface.detachKernelDriver(); } catch (e) {}
               }
             }
-          }
-          iface.claim(); // must be called before using any endpoints of this interface.
-          iface.endpoints.filter(function(endpoint){
-            if(endpoint.direction == 'out' && !self.endpoint) {
-              self.endpoint = endpoint;
-            }
-            if(endpoint.direction == 'in' && !self.deviceToPcEndpoint) {
-              self.deviceToPcEndpoint = endpoint;
-            }
-          });
-          if(self.endpoint) {
-            self.emit('connect', self.device);
-            callback && callback(null, self);
-          } else if(++counter === this.device.interfaces.length && !self.endpoint){
-            callback && callback(new Error('Can not find endpoint from printer'));
-          }
-        } catch (e) {
-          // Try/Catch block to prevent process from exit due to uncaught exception.
-          // i.e LIBUSB_ERROR_ACCESS might be thrown by claim() if USB device is taken by another process
-          // example: MacOS Parallels
-          callback && callback(e);
-        }
-      });
-    })(iface);
-  });
-  return this;
 
+            iface.claim();
+
+            iface.endpoints.filter(function (endpoint) {
+              if (endpoint.direction === 'out' && !self.endpoint) self.endpoint = endpoint;
+              if (endpoint.direction === 'in' && !self.deviceToPcEndpoint) self.deviceToPcEndpoint = endpoint;
+            });
+
+            if (self.endpoint) {
+              self._isOpen = true;
+              self._isClosing = false;
+              self.emit('connect', self.device);
+              callback && callback(null, self);
+            } else if (++counter === self.device.interfaces.length && !self.endpoint) {
+              callback && callback(new Error('Can not find endpoint from printer'));
+            }
+          } catch (e) {
+            callback && callback(e);
+          }
+        });
+      })(iface);
+    });
+  } catch (e) {
+    callback && callback(e);
+  }
+
+  return this;
 };
 
-/**
- * [function write]
- * @param  {[type]} data [description]
- * @return {[type]}      [description]
- */
-USB.prototype.write = function(data, callback){
+USB.prototype.write = function (data, callback) {
+  if (!this.endpoint) {
+    callback && callback(new Error('USB endpoint not ready'));
+    return this;
+  }
   this.emit('data', data);
-  this.endpoint.transfer(data, callback);
+  try {
+    this.endpoint.transfer(data, callback);
+  } catch (e) {
+    callback && callback(e);
+  }
   return this;
 };
 
-/**
- * read buffer from the printer
- * @param  {Function} callback
- * @return {USB}
- */
- USB.prototype.read = function(callback) {
-  this.deviceToPcEndpoint.transfer(64, (error,data) => callback(data));
-   
- return this;
+USB.prototype.read = function (callback) {
+  if (!this.deviceToPcEndpoint) {
+    callback && callback(Buffer.alloc(0));
+    return this;
+  }
+  try {
+    this.deviceToPcEndpoint.transfer(64, function (_error, data) {
+      callback(data || Buffer.alloc(0));
+    });
+  } catch (e) {
+    callback && callback(Buffer.alloc(0));
+  }
+  return this;
 };
 
-USB.prototype.close = function(callback){
-
-  if(this.device) {
-
-    try {
-
-      this.device.close();
-      // usb.removeAllListeners('detach');
-      // usb.removeAllListeners('attach');
-
-      callback && callback(null);
-      this.emit('close', this.device);
-
-    }
-    catch (e) {
-      callback && callback(e);
-    }
-
-  }
-  else {
+USB.prototype.close = function (callback) {
+  // idempotent close (sprečava native abort)
+  if (this._isClosing) {
     callback && callback(null);
+    return this;
+  }
+  this._isClosing = true;
+
+  if (!this.device || !this._isOpen) {
+    this._isOpen = false;
+    this.endpoint = null;
+    this.deviceToPcEndpoint = null;
+    callback && callback(null);
+    return this;
   }
 
-  return this;
+  try {
+    this.device.close();
+  } catch (e) {
+    // ignore
+  }
 
+  this._isOpen = false;
+  this.endpoint = null;
+  this.deviceToPcEndpoint = null;
+
+  callback && callback(null);
+  this.emit('close', this.device);
+
+  return this;
 };
 
-/**
- * [exports description]
- * @type {[type]}
- */
 module.exports = USB;
