@@ -1,6 +1,6 @@
 {
   "name": "espos-usb-mc",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "description": "My temp espos-usb solution",
   "main": "index.js",
   "scripts": {
