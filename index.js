@@ -216,12 +216,29 @@ USB.prototype.write = function (data, callback) {
  * - no parallel reads
  */
 USB.prototype.read = function (callback) {
+  // Guard: device is resetting or closing – same as write()
+  if (this._isResetting || this._isClosing) {
+    callback && callback(new Error('USB busy (reset/close)'));
+    return this;
+  }
+
   if (!this.deviceToPcEndpoint) {
     callback && callback(null, Buffer.alloc(0));
     return this;
   }
+
+  // Guard: prevent parallel IN transfers (deadlock / corruption)
+  if (this._readInFlight) {
+    callback && callback(new Error('USB read already in progress'));
+    return this;
+  }
+
+  this._readInFlight = true;
+  var self = this;
+
   try {
     this.deviceToPcEndpoint.transfer(8, function (err, data) {
+      self._readInFlight = false;
       if (err) {
         return callback && callback(err, Buffer.alloc(0));
       }
@@ -229,6 +246,7 @@ USB.prototype.read = function (callback) {
       callback && callback(null, buf);
     });
   } catch (e) {
+    this._readInFlight = false;
     callback && callback(e, Buffer.alloc(0));
   }
   return this;
@@ -255,6 +273,7 @@ USB.prototype.reset = function (callback) {
   try {
     this.device.reset((err) => {
       this._isResetting = false;
+      this._readInFlight = false;
 
       // After reset, endpoints are not reliable -> force reopen later
       this._isOpen = false;
@@ -265,6 +284,7 @@ USB.prototype.reset = function (callback) {
     });
   } catch (e) {
     this._isResetting = false;
+    this._readInFlight = false;
     callback && callback(e);
   }
 
@@ -295,6 +315,7 @@ USB.prototype.close = function (callback) {
   }
 
   this._isOpen = false;
+  this._readInFlight = false;
   this.endpoint = null;
   this.deviceToPcEndpoint = null;
   this._isClosing = false;
